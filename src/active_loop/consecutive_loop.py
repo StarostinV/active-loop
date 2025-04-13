@@ -153,3 +153,4 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
             'scattering_angle': scattering_angle,
             'transmission': transmission,
         }
+ 

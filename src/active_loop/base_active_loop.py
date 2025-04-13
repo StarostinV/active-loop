@@ -14,6 +14,7 @@ from active_loop.ports import PUSH_SERVER_PORT, FETCH_SERVER_PORT
 from active_loop.xrr_config import XRRConfig
 from active_loop.logging_utils import setup_logging
 
+
 class BaseActiveLoop:
     """Base class for active learning loops"""
     

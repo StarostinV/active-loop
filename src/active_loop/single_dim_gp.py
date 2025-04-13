@@ -23,13 +23,18 @@ class SingleDimActiveMeasurement(ActiveMeasurement):
                  bounds: tuple[float, float] = (0, 1),
                  param_idx: int = 0,
                  fit_kernel: bool = True,
+                 fit_likelihood: bool = False,
                  max_num_points: int = 30,
                  lengthscale: float = None,
                  outputscale: float = None,
+                 noise: float = None,
                  lengthscale_prior_mean: float = None,
                  lengthscale_prior_std: float = None,
                  outputscale_prior_mean: float = None,
                  outputscale_prior_std: float = None,
+                 noise_prior_mean: float = None,
+                 noise_prior_std: float = None,
+                 noise_bounds: tuple[float, float] = None,
                  ):
         super().__init__(
             initial_points=initial_points,
@@ -43,15 +48,20 @@ class SingleDimActiveMeasurement(ActiveMeasurement):
         self.gp = None
         self.param_idx = param_idx
         self.fit_kernel = fit_kernel
+        self.fit_likelihood = fit_likelihood
 
         self.lengthscale = lengthscale
         self.outputscale = outputscale
+        self.noise = noise
         
         # Store prior parameters
         self.lengthscale_prior_mean = lengthscale_prior_mean
         self.lengthscale_prior_std = lengthscale_prior_std
         self.outputscale_prior_mean = outputscale_prior_mean
         self.outputscale_prior_std = outputscale_prior_std
+        self.noise_prior_mean = noise_prior_mean
+        self.noise_prior_std = noise_prior_std
+        self.noise_bounds = noise_bounds
 
     def preprocess_input(self, x, y, y_std):
         x = torch.atleast_1d(x.flatten())[:, None]
@@ -100,15 +110,52 @@ class SingleDimActiveMeasurement(ActiveMeasurement):
             self.gpkernel.register_prior(
                 "outputscale_prior", outputscale_prior, "outputscale"
             )
+        
+        # Choose between fixed noise or fitted likelihood
+        if self.fit_likelihood:
+            # Set up noise constraints if provided
+            noise_constraint = None
+            if self.noise_bounds is not None:
+                from gpytorch.constraints import Interval
+                noise_constraint = Interval(
+                    lower_bound=torch.tensor(self.noise_bounds[0]),
+                    upper_bound=torch.tensor(self.noise_bounds[1])
+                )
             
-        self.gp = SingleTaskGP(
-            train_X=train_x,
-            train_Y=train_y,
-            covar_module=self.gpkernel,
-            likelihood=FixedNoiseGaussianLikelihood(
-                noise=train_std.pow(2).to(self._target)
+            # Create the likelihood with appropriate constraints
+            likelihood = GaussianLikelihood(noise_constraint=noise_constraint)
+            
+            # Initialize with provided noise value or use median of train_std
+            if self.noise is not None:
+                likelihood.noise = torch.tensor(self.noise)
+            else:
+                init_noise = train_std.pow(2).median().item()
+                likelihood.noise = torch.tensor(init_noise)
+            
+            # Add noise prior if specified
+            if self.noise_prior_mean is not None and self.noise_prior_std is not None:
+                noise_prior = LogNormalPrior(
+                    loc=torch.tensor(np.log(self.noise_prior_mean)),
+                    scale=torch.tensor(self.noise_prior_std)
+                )
+                likelihood.register_prior("noise_prior", noise_prior, "noise")
+            
+            self.gp = SingleTaskGP(
+                train_X=train_x,
+                train_Y=train_y,
+                covar_module=self.gpkernel,
+                likelihood=likelihood
             )
-        )
+        else:
+            # Use traditional fixed noise approach
+            self.gp = SingleTaskGP(
+                train_X=train_x,
+                train_Y=train_y,
+                covar_module=self.gpkernel,
+                likelihood=FixedNoiseGaussianLikelihood(
+                    noise=train_std.pow(2).to(self._target)
+                )
+            )
         
         if self.fit_kernel:
             mll = ExactMarginalLogLikelihood(self.gp.likelihood, self.gp)
@@ -150,11 +197,15 @@ if __name__ == "__main__":
         initial_points=[-24, 0, 24],
         bounds=[-24, 24],
         fit_kernel=True,  # Now we can use fit_kernel=True with priors
+        fit_likelihood=True,  # Using fitted noise with priors
         max_num_points=30,
         lengthscale_prior_mean=1.0,
         lengthscale_prior_std=0.3,
         outputscale_prior_mean=1.0,
         outputscale_prior_std=0.3,
+        noise_prior_mean=0.01,      # Expect relatively small noise
+        noise_prior_std=0.5,        # Allow reasonable variation
+        noise_bounds=(1e-6, 0.1),   # Reasonable bounds for noise
     )
     active_measurement.add_points(torch.tensor([-24]), torch.tensor([0.5]), torch.tensor([0.01]), update_gp=False)
     print("added points")
