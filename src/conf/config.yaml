@@ -1,0 +1,55 @@
+# @package _global_
+
+# Default configuration for active learning loops
+defaults:
+  - active_loop: consecutive_loop
+  - inference: npe_inference_1l
+  - active_measurement: single_dim_priors_1l
+  - _self_
+
+# Hydra configuration to disable default output directory
+hydra:
+  output_subdir: null  # Disable hydra output directory
+  run:
+    dir: .  # Don't change working directory
+
+# Connection parameters
+connection:
+  host: "127.0.0.1"
+  push_port: 8082  # Default push server port
+  fetch_port: 8080  # Default fetch server port
+  log_level: "INFO"
+  log_file: null
+  max_attempts: 1000
+  wait_time: 0.5
+
+# Common logging configuration
+logging:
+  level: "INFO"
+  file_path: null  # Set to a path to enable file logging
+  file_prefix: "active_loop"  # Used to create log files when file_path is set
+  propagate: false
+
+# preprocessing
+preprocessing:
+  wavelength: 0.6888
+  beam_width: 0.1
+  sample_length: 10
+  beam_shape: "gauss"
+  normalize_mode: "max"
+
+# Measurement parameters
+xrr_config:
+  tt_min: 0.12
+  tt_max: 1.0
+  gpos1: -0.18
+  gpos2: -0.11
+  lpos1: -25
+  lpos2: 25
+  num_points: 64
+
+# Experiment settings
+experiment:
+  name: "dip-roughness-prior-1l-241008-1"
+  save_dir: "./results"
+  seed: 42

@@ -1,0 +1,10 @@
+# Configuration for Neural Posterior Estimation (NPE) inference model
+
+# @package _global_
+
+module: consecutive_inference
+class_name: DummyConsecutiveInferenceWithNPE
+params:
+  config_name: "gp-exp-thin-films-on-si-1l"
+  device: "cuda"
+  sigma: 0.2

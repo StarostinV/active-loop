@@ -1,0 +1,11 @@
+# Configuration for consecutive active loop
+
+module: consecutive_loop
+class_name: ConsecutiveActiveLoop
+
+params:
+  host: ${connection.host}
+  push_port: ${connection.push_port}
+  fetch_port: ${connection.fetch_port}
+  log_level: ${connection.log_level}
+  log_file: ${connection.log_file} 

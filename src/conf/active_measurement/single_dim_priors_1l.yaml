@@ -1,0 +1,12 @@
+module: single_dim_gp
+class_name: SingleDimActiveMeasurement
+params:
+    bounds: [-25, 25]
+    initial_points: [-25.0, 25.0]
+    param_idx: 1
+    fit_kernel: true
+    max_num_points: 30
+    lengthscale_prior_mean: 3.5
+    lengthscale_prior_std: 0.5
+    outputscale_prior_mean: 0.3
+    outputscale_prior_std: 0.05
