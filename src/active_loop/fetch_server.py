@@ -35,12 +35,14 @@ class FetchServer:
                  log_level: str = 'INFO',
                  intensity_key: str = "p100k_roi2",
                  transmission_key: str = "transmission", 
+                 x_key: str = "lx15a",
                  tt_key: str = "tt",
                  background_key: str = "p100k_roi3",
                  fetch_interval: float = 1.0,
                  save_to_file: bool = False,
                  log_file: Optional[str] = None,
                  timeout: float = 1.0,
+                 test_mode: bool = False,
                  ):
         self.host = host
         self.port = port
@@ -51,9 +53,11 @@ class FetchServer:
         self.intensity_key = intensity_key
         self.transmission_key = transmission_key
         self.tt_key = tt_key
+        self.x_key = x_key
         self.fetch_interval = fetch_interval
         self.save_to_file = save_to_file
         self.timeout = timeout
+        self.test_mode = test_mode
         # Redis configuration
         redis_config = PROD_REDIS_CONFIG if use_prod else TEST_REDIS_CONFIG
         self.redis_url = "redis://haspp08:6380"  # Default Redis URL
@@ -75,7 +79,10 @@ class FetchServer:
             self.handle_client, self.host, self.port
         )
         self.running = True
-        self.fetch_task = asyncio.create_task(self.fetch_loop())
+        if not self.test_mode:
+            self.fetch_task = asyncio.create_task(self.fetch_loop())
+        else:
+            self.logger.info("Running in test mode - fetch loop skipped")
         self.logger.info(f"Fetch server started on {self.host}:{self.port}")
         async with self.server:
             await self.server.serve_forever()
@@ -138,6 +145,7 @@ class FetchServer:
                         "transmission": scan.streams[self.transmission_key][:].tolist() if self.transmission_key in scan.streams else [],
                         "scattering_angle": scan.streams[self.tt_key][:].tolist() if self.tt_key in scan.streams else [],
                         "background": scan.streams[self.background_key][:].tolist() if self.background_key in scan.streams else [],
+                        "x": scan.streams[self.x_key][:].tolist() if self.x_key in scan.streams else [],
                     },
                     timestamp=timestamp
                 )
@@ -284,6 +292,7 @@ def main():
                       help="Logging level")
     parser.add_argument("--save-to-file", action="store_true", help="Save the scan data to a file")
     parser.add_argument("--log-file", default=None, help="File to save logs to")
+    parser.add_argument("--test", action="store_true", help="Run in test mode (no real data fetching)")
     args = parser.parse_args()
     
     server = FetchServer(
@@ -291,7 +300,8 @@ def main():
         port=args.port,
         log_level=args.log_level,
         save_to_file=args.save_to_file,
-        log_file=args.log_file
+        log_file=args.log_file,
+        test_mode=args.test
     )
     
     try:

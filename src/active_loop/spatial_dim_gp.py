@@ -7,6 +7,7 @@ import numpy as np
 from gpytorch.kernels import Kernel, RBFKernel, ScaleKernel, ProductKernel
 from gpytorch.likelihoods import GaussianLikelihood, FixedNoiseGaussianLikelihood
 from gpytorch.priors import NormalPrior, LogNormalPrior
+from gpytorch.means import ZeroMean, LinearMean, ConstantMean
 
 from botorch.models import SingleTaskGP
 from botorch.fit import fit_gpytorch_mll
@@ -36,6 +37,8 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
                  noise_prior_std: Optional[float] = None,
                  noise_bounds: Optional[tuple[float, float]] = None,
                  axis_names: tuple[str, str] = ("x", "om"),
+                 n_candidates: int = 1,
+                 use_linear_mean: bool = False,
                  ):
         """
         Initialize SpatialDimActiveMeasurement with 2D spatial inputs.
@@ -60,6 +63,9 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
             noise_bounds: Optional tuple of (min, max) bounds for noise
             axis_names: Optional tuple of (x_name, y_name) axis names. 
                 Default is ("x", "om").
+            n_candidates: Number of candidates to return when finding next points.
+            use_linear_mean: Whether to use a linear mean function instead of zero mean.
+                If True, the GP will fit a linear trend in the data.
         """
         # Convert bounds to flatten for the base class
         
@@ -69,6 +75,7 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
             ndim=1,
             xdim=2,
             max_num_points=max_num_points,
+            n_candidates=n_candidates,
         )
         
         # Create default kernel if none provided
@@ -98,28 +105,20 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
         self.noise_prior_std = noise_prior_std
         self.noise_bounds = noise_bounds
         self.axis_names = axis_names
+        self.use_linear_mean = use_linear_mean
 
     def preprocess_input(self, x, y, y_std):
         """Preprocess inputs for the GP"""
         # Ensure x is a 2D tensor [batch_size, 2]
-        if x.dim() == 1 and x.size(0) == 2:
-            # Single point as [x, y]
-            x = x.unsqueeze(0)
-        elif x.dim() == 2 and x.size(1) != 2:
-            raise ValueError(f"Input x must have shape [batch_size, 2], got {x.shape}")
-            
-        # Process y and y_std
-        if y.dim() > 1:
-            y = y.flatten()[self.param_idx].unsqueeze(0)
-        else:
-            y = y[self.param_idx].unsqueeze(0)
-            
-        if y_std.dim() > 1:
-            y_std = y_std.flatten()[self.param_idx].unsqueeze(0)
-        else:
-            y_std = y_std[self.param_idx].unsqueeze(0)
-            
-        return x, y.unsqueeze(-1), y_std.unsqueeze(-1)
+        # if x.dim() == 1 and x.size(0) == 2:
+        #     # Single point as [x, y]
+        #     x = x.unsqueeze(0)
+        # elif x.dim() == 2 and x.size(1) != 2:
+        #     raise ValueError(f"Input x must have shape [batch_size, 2], got {x.shape}")
+        
+        # assert x.dim() == 2 and x.size(1) == 2, f"Input x must have shape [batch_size, 2], got {x.shape}"
+        
+        return x, y, y_std
     
     def add_points(self, x: torch.Tensor, y: torch.Tensor, y_std: torch.Tensor, update_gp: bool = True):
         """Add new observation points and update the GP model"""
@@ -210,13 +209,26 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
                 )
                 likelihood.register_prior("noise_prior", noise_prior, "noise")
             
+            # Create mean module based on configuration
+            if self.use_linear_mean:
+                mean_module = LinearMean(input_size=2)  # 2D inputs
+            else:
+                mean_module = ZeroMean()
+                
             self.gp = SingleTaskGP(
                 train_X=train_x,
                 train_Y=train_y,
                 covar_module=self.gpkernel,
-                likelihood=likelihood
+                likelihood=likelihood,
+                mean_module=mean_module
             )
         else:
+            # Create mean module based on configuration
+            if self.use_linear_mean:
+                mean_module = LinearMean(input_size=2)  # 2D inputs
+            else:
+                mean_module = ZeroMean()
+                
             # Use traditional fixed noise approach
             self.gp = SingleTaskGP(
                 train_X=train_x,
@@ -224,7 +236,8 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
                 covar_module=self.gpkernel,
                 likelihood=FixedNoiseGaussianLikelihood(
                     noise=train_std.pow(2).to(self._target)
-                )
+                ),
+                mean_module=mean_module
             )
         
         if self.fit_kernel:
@@ -253,13 +266,28 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
         """Optimize acquisition function to find next point"""
         if self.gp is None:
             raise ValueError("GP is not fitted yet.")
+        
         acq = UncertaintyAcquisition(self.gp)
         return optimize_acqf(acq, bounds=self._bounds, q=q, num_restarts=num_restarts, raw_samples=raw_samples)
     
     def find_candidate(self, q: int = 1, num_restarts: int = 20, raw_samples: int = 100) -> torch.Tensor:
-        """Find next candidate point to measure"""
-        return self.optimize_acq(q=q, num_restarts=num_restarts, raw_samples=raw_samples)[0]
-    
+        """Find next candidate point(s) to measure
+        
+        Args:
+            q: Number of candidates to return
+            num_restarts: Number of optimization restarts
+            raw_samples: Number of initial samples for optimization
+            
+        Returns:
+            Tensor of shape (q, 2) containing q candidate points
+        """
+        # Ensure raw_samples is at least 2*q to avoid sampling error
+        raw_samples = max(raw_samples, q * 100)
+        
+        result = self.optimize_acq(q=q, num_restarts=num_restarts, raw_samples=raw_samples)
+        return result[0]
+
+
     def plot_gp_2d(self,
                    test_x: torch.Tensor = None,
                    resolution: int = 50, 
@@ -329,6 +357,12 @@ class Spatial2DimActiveMeasurement(ActiveMeasurement):
         
         ax1.legend()
         plt.tight_layout()
+
+        print("mean: ")
+        print(mean)
+        print("variance: ")
+        print(variance)
+    
         return fig
 
 
@@ -340,6 +374,8 @@ class UncertaintyAcquisition(AnalyticAcquisitionFunction):
     def forward(self, X: torch.Tensor) -> torch.Tensor:
         posterior = self.model.posterior(X)
         res = posterior.variance.squeeze((-1, -2))
+        if res.dim() == 2:
+            res = res.mean(1)
         return res
 
 
@@ -347,32 +383,78 @@ if __name__ == "__main__":
     # Example usage
     active_measurement = Spatial2DimActiveMeasurement(
         initial_points=[[0, 0], [0, 1], [1, 0], [1, 1]],
-        bounds=((-1, 1), (-1, 1)),
+        bounds= [[-25, 25], [-1, 1]],
         fit_kernel=True,
         fit_likelihood=True,  # Demonstrate with likelihood fitting enabled
         max_num_points=30,
-        lengthscale_prior_mean=[0.5, 0.5],  # Different priors for each dimension
-        lengthscale_prior_std=[0.3, 0.3],
+        lengthscale_prior_mean=[10, 0.5],  # Different priors for each dimension
+        lengthscale_prior_std=[10, 0.3],
         outputscale_prior_mean=1.0,
         outputscale_prior_std=0.3,
         noise_prior_mean=0.01,  # Prior mean for noise (relatively small)
         noise_prior_std=0.5,    # Prior std allows some flexibility
         noise_bounds=(1e-6, 0.1),  # Reasonable bounds for noise
+        use_linear_mean=False,  # Can set to True to fit a linear trend in the data
     )
+    
+    # Create another example with linear mean function enabled
+    # active_measurement_with_linear_mean = Spatial2DimActiveMeasurement(
+    #     initial_points=[[0, 0], [0, 1], [1, 0], [1, 1]],
+    #     bounds= [[-25, 25], [0.06, 0.5]],
+    #     fit_kernel=True,
+    #     fit_likelihood=True,
+    #     max_num_points=30,
+    #     use_linear_mean=True,  # Enable fitting a linear trend instead of zero mean
+    # )
     
     # Add initial points
     print("adding points")
-    active_measurement.add_points(torch.tensor([0.0, 0.0]), torch.tensor([0.5]), torch.tensor([0.01]), update_gp=False)
-    active_measurement.add_points(torch.tensor([0.0, 1.0]), torch.tensor([0.3]), torch.tensor([0.01]), update_gp=False)
-    active_measurement.add_points(torch.tensor([1.0, 0.0]), torch.tensor([0.2]), torch.tensor([0.01]), update_gp=False)
+
+    def simulate_measurement(x):
+        return 0.5 * torch.sin(x[:, 0] / 10) + 0.3 * x[:, 1] + torch.randn(x.shape[0]) * 0.01 - 6
+    
+    for i in range(50):
+        # sample x from bounds:
+        x = (
+            torch.rand(1, 2) * (active_measurement.bounds[1] - active_measurement.bounds[0]) 
+            + active_measurement.bounds[0]
+        )
+        y = simulate_measurement(x).unsqueeze(-1)
+        y_std = torch.ones_like(y) * 0.01
+        active_measurement.add_points(x, y, y_std, update_gp=False)
+
+    active_measurement.update_gp(
+        active_measurement.train_x,
+        active_measurement.train_y,
+        active_measurement.train_y_std
+    )
+
     print("adding points with update_gp=True")
-    active_measurement.add_points(torch.tensor([1.0, 1.0]), torch.tensor([0.8]), torch.tensor([0.01]), update_gp=True)
+    active_measurement.add_points(torch.tensor([1.0, 1.0])[None], torch.tensor([0.8])[None], torch.tensor([0.01])[None], update_gp=True)
     
     print("finding candidate")
-    # Find next candidate point
-    candidate = active_measurement.find_candidate()
-    print(f"Next point to measure: {candidate}")
+    # Find next candidate point 
+    acq = UncertaintyAcquisition(active_measurement.gp)
+    candidate = optimize_acqf(
+        acq, bounds=active_measurement._bounds, q=1, num_restarts=20,
+        raw_samples=100
+    )[0]
+    print(candidate)
     
-    # Plot the GP
+    # candidate = active_measurement.find_candidate(q=3)
+    # print(f"Next point to measure: {candidate}")
+    
+    # # Find multiple candidates in a single run
+    # print("finding multiple candidates")
+    # candidates = active_measurement.find_candidate(q=3)
+    # print(f"Multiple points to measure (batch of 3):")
+    # for i, point in enumerate(candidates):
+    #     print(f"  Candidate {i+1}: {point}")
+    
+    # # Plot the GP
     active_measurement.plot_gp_2d()
+    # add candidate to plot
+
+    candidate = candidate.flatten().numpy().tolist()
+    plt.gca().scatter([candidate[0]], [candidate[1]], marker='.', s=50, color='black', label='Candidate')
     plt.savefig("gp_2d.png")

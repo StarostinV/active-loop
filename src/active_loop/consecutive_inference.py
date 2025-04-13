@@ -1,7 +1,7 @@
 import torch
 from torch import nn, Tensor
 from numpy import ndarray
-
+import numpy as np
 from reflectgp.inference.preprocess_exp import StandardPreprocessing
 from reflectgp.config_utils import init_inference_model_from_config
 from reflectgp.inference import MeasuredData
@@ -39,28 +39,38 @@ class ConsecutiveInference(nn.Module):
     def is_complete(self) -> bool:
         return len(self.data) >= self.max_num_points
 
-    def add_data(self, 
-                 x: float,
+    def add_data(self,
                  intensity: ndarray,
                  scattering_angle: ndarray,
-                 transmission: ndarray
+                 transmission: ndarray,
+                 x: ndarray,
                  ):
         res = {}
         res['raw_data'] = {
             'intensity': intensity,
             'scattering_angle': scattering_angle,
             'transmission': transmission,
+            'x': x,
         }
-        res.update(self.preprocessor(intensity, scattering_angle, transmission))
         res['x'] = torch.tensor(x)
         self.data.append(res)
+        preprocessed_data = self.preprocess_data(x, intensity, scattering_angle, transmission)
+        res.update(preprocessed_data)
         self.logger.info(f"Added data point at x = {x}, total points: {len(self.data)}")
         self.process_new_data()
+
+    def preprocess_data(self,
+                        x: ndarray,
+                        intensity: ndarray,
+                        scattering_angle: ndarray,
+                        transmission: ndarray
+                        ) -> dict:
+        return self.preprocessor(intensity, scattering_angle, transmission)
 
     def process_new_data(self):
         raise NotImplementedError("Subclasses must implement this method")
 
-    def get_next_candidate(self) -> float:
+    def get_next_candidate(self) -> Tensor:
         raise NotImplementedError("Subclasses must implement this method")
 
     def clear_data(self):
@@ -81,7 +91,7 @@ class BasicConsecutiveInference(ConsecutiveInference):
                  log_level: str = "INFO",
                  log_file: str = None,
                  save_dir: str = None,
-
+                 save_prefix: str = '',
                  ):
         super().__init__(
             preprocessor=preprocessor,
@@ -90,30 +100,72 @@ class BasicConsecutiveInference(ConsecutiveInference):
             log_file=log_file,
             save_dir=save_dir,
         )
+        self.save_prefix = save_prefix
         self.initial_points = active_measurement.initial_points
         self.logger.info(f"Initialized with {len(self.initial_points)} initial points: {self.initial_points}")
 
-    def get_next_candidate(self) -> float:
-        if len(self.data) < len(self.initial_points):
-            next_point = self.initial_points[len(self.data)]
-            self.logger.info(f"Using initial point: {next_point}")
-            return next_point
-        else:
-            next_point = self.get_next_candidate_from_model()
-            self.logger.info(f"Using model-predicted point: {next_point}")
-            return next_point
+    def get_next_candidate(self) -> Tensor:
+        n_candidates = self.active_measurement.n_candidates
+        
+        # First use initial points, then switch to model predictions
 
-    def get_next_candidate_from_model(self) -> float:
-        candidate = self.active_measurement.find_candidate().flatten()[0].item()
-        self.logger.info(f"Candidate: {candidate}")
-        self.save_gp_plot()
-        return candidate
+        next_points = []
+
+        while len(self.initial_points):
+            next_points.append(self.initial_points.pop(0))
+
+            if len(next_points) >= n_candidates:
+                break
+        
+        if next_points:
+            self.logger.info(f"Using initial point(s): {next_points}")
+
+        if len(next_points) < n_candidates:
+            if self.active_measurement.gp is not None:
+                # Get point(s) from model
+                additional_points = self.active_measurement.find_candidate(q=n_candidates - len(next_points))
+                self.logger.info(f"Using model-predicted point(s): {additional_points}")
+                self.save_gp_plot()
+
+                if next_points:
+                    next_points = torch.cat([torch.tensor(next_points), additional_points], 0)
+                else:
+                    next_points = additional_points
+            else:
+                self.logger.warning("No GP model found, using initial points only")
+                next_points = torch.tensor(next_points)
+        else:
+            next_points = torch.tensor(next_points)
+
+        xdim = self.active_measurement.xdim
+        next_points = next_points.reshape(-1, xdim)
+        self.logger.info(f"Next point(s): {next_points}")
+        return next_points
 
     def save_gp_plot(self):
         self.active_measurement.plot_gp()
         path = self.save_dir / f"gp_plot_{len(self.data)}.png"
         plt.savefig(path)
         self.logger.info(f"GP plot saved to {path}")
+
+    def save_last_results(self):
+        if len(self.data) == 0:
+            self.logger.warning("No data to save")
+            return
+        
+        storage = self.data[-1]
+        self.logger.info("Saving fit result")
+
+        idx = len(self.data)
+        name = f"fit_result_{self.save_prefix}_{idx}"
+        res_path = self.save_dir / f"{name}.pt"
+        torch.save({
+            'data': storage,
+            'active_measurement': self.active_measurement.state_dict(),
+        }, res_path)
+        self.logger.info(f"Fit result saved to {res_path}")
+        return res_path
+
 
 
 class DummyConsecutiveInferenceWithNPE(BasicConsecutiveInference):
@@ -134,6 +186,7 @@ class DummyConsecutiveInferenceWithNPE(BasicConsecutiveInference):
             log_level=log_level,
             log_file=log_file,
             save_dir=save_dir,
+            save_prefix=config_name,
         )
         self.config_name = config_name
         self.logger.info(f"Initializing model with config: {self.config_name}")
@@ -176,7 +229,7 @@ class DummyConsecutiveInferenceWithNPE(BasicConsecutiveInference):
     
     def process_new_data(self):
         x, y, y_std = self.fit()
-        update_gp = len(self.data) > 1
+        update_gp = len(self.data) + x.shape[0] > 1
         self.active_measurement.add_points(x, y, y_std, update_gp=update_gp)
         self.save_last_results()
     
@@ -220,21 +273,113 @@ class DummyConsecutiveInferenceWithNPE(BasicConsecutiveInference):
         path = self.save_dir / f"profiles_plot_{len(self.data)}.png"
         plt.savefig(path)
         self.logger.info(f"Profile plot saved to {path}")
-    
-    def save_last_results(self):
-        if len(self.data) == 0:
-            self.logger.warning("No data to save")
-            return
-        
-        storage = self.data[-1]
-        self.logger.info("Saving fit result")
 
-        idx = len(self.data)
-        name = f"fit_result_{self.config_name}_{idx}"
-        res_path = self.save_dir / f"{name}.pt"
-        torch.save({
-            'data': storage,
-            'active_measurement': self.active_measurement.state_dict(),
-        }, res_path)
-        self.logger.info(f"Fit result saved to {res_path}")
-        return res_path
+
+class ConsecutiveInferenceWithXOMMap(BasicConsecutiveInference):
+    def __init__(self,
+                 preprocessor: StandardPreprocessing,
+                 active_measurement: ActiveMeasurement,
+                 log_level: str = "INFO",
+                 log_file: str = None,
+                 save_dir: str = None,
+                 err_std: float = 0.2,
+                 max_intensity: float = 10**10, 
+                 save_prefix: str = '',
+    ):
+        super().__init__(
+            preprocessor=preprocessor,
+            active_measurement=active_measurement,
+            log_level=log_level,
+            log_file=log_file,
+            save_dir=save_dir,
+            save_prefix=save_prefix,
+        )
+        self.err_std = err_std
+        self.max_intensity = max_intensity
+
+    def add_data(self, 
+                 x: np.ndarray,
+                 intensity: ndarray,
+                 scattering_angle: ndarray,
+                 transmission: ndarray
+                 ):
+        res = {}
+        x, intensity, intensity_err = self.preprocess_data(
+            x, intensity, scattering_angle, transmission
+        )
+        res['raw_data'] = {
+            'intensity': intensity,
+            'scattering_angle': scattering_angle,
+            'transmission': transmission,
+        }
+        res['x'] = torch.tensor(x)
+        res['intensity'] = intensity
+        res['intensity_err'] = intensity_err
+        self.data.append(res)
+        self.logger.info(f"Added data point at x = {x}, total points: {len(self.data)}")
+        self.process_new_data()
+
+    def preprocess_data(self,
+                        x: np.ndarray,
+                        intensity: ndarray,
+                        scattering_angle: ndarray,
+                        transmission: ndarray
+                        ) -> dict:
+        self.logger.info(f"x: {x}")
+        self.logger.info(f"intensity: {intensity}")
+        self.logger.info(f"scattering_angle: {scattering_angle}")
+        self.logger.info(f"transmission: {transmission}")
+
+        x_om = np.array([x, scattering_angle])
+
+        indices = np.array(
+            np.where(np.any(np.diff(x_om, axis=1) != 0, axis=0))[0].tolist() + [len(x) - 1]
+        )
+
+        x = np.stack([x[indices], scattering_angle[indices] / 2], -1)
+
+        intensity = intensity[indices]
+        scattering_angle = scattering_angle[indices]
+        transmission = transmission[indices]
+
+        self.logger.info(f"intensity: {intensity}")
+        self.logger.info(f"scattering_angle: {scattering_angle}")
+        self.logger.info(f"transmission: {transmission}")
+        
+        intensity = torch.as_tensor(intensity)
+        transmission = torch.as_tensor(transmission)
+        intensity = intensity / transmission
+        intensity_err = torch.sqrt(intensity)
+        scattering_angle = torch.as_tensor(scattering_angle)
+        intensity = torch.clamp(intensity, min=1e-10)
+        intensity_err = intensity_err / intensity / np.log(10)
+
+        intensity = intensity / self.max_intensity
+        intensity = torch.log10(intensity)
+
+        intensity = intensity.unsqueeze(1)
+        intensity_err = torch.clamp(intensity_err, min=1e-2, max=10).unsqueeze(1)
+
+        self.logger.info(f"processed intensity: {intensity}")
+        self.logger.info(f"processed intensity_err: {intensity_err}")
+        self.logger.info(f"processed x: {x}")
+        
+        return x, intensity, intensity_err
+
+    def process_new_data(self):
+        data = self.data[-1]
+        x, y, y_std = (
+            data['x'],
+            data['intensity'],
+            data['intensity_err'],
+        )
+        update_gp = self.active_measurement.train_x.shape[0] + x.shape[0]> 1
+        self.logger.info(
+            f"x.shape: {x.shape}, y.shape: {y.shape}, y_std.shape: {y_std.shape}"
+        )
+        self.active_measurement.add_points(
+            x, y, y_std,
+            update_gp=update_gp
+        )
+        self.save_last_results()
+ 

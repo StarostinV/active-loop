@@ -7,6 +7,7 @@ import os
 import time
 from typing import Dict, List, Any, Optional, Union, Tuple
 
+from torch import Tensor
 from active_loop.ports import PUSH_SERVER_PORT
 from active_loop.network_utils import read_json_message
 from active_loop.logging_utils import setup_logging
@@ -77,23 +78,32 @@ class PushClient:
             raise
     
     async def request_measurement(self, 
-                                x_positions: Union[List[float], float],
+                                candidates: Tensor,
                                 clear_queue: bool = True,
                                 reopen_env: bool = True,
                                 **kwargs: Any
                                 ) -> Dict[str, Any]:
         """Request a measurement at the specified x positions"""
         # Convert single position to list if needed
-        if isinstance(x_positions, (int, float)):
-            x_positions = [float(x_positions)]
+        assert candidates.ndim == 2
+
+        if candidates.shape[1] == 1:
+            x_positions = candidates.flatten().tolist()
+            om_positions = None
+            self.logger.info(f"Requesting measurement at x positions: {x_positions}")
+
+        elif candidates.shape[1] == 2:
+            x_positions, om_positions = candidates.split(1, dim=-1)
+            x_positions = x_positions.flatten().tolist()
+            om_positions = om_positions.flatten().tolist()
+            self.logger.info(f"Requesting measurement at x positions: {x_positions} and om positions: {om_positions}")
         else:
-            x_positions = [float(x) for x in x_positions]
-            
-        self.logger.info(f"Requesting measurement at x positions: {x_positions}")
-        
+            raise ValueError(f"Invalid number of dimensions: {candidates.shape[1]}")
+                            
         command = {
             'command': 'measure',
             'x_positions': x_positions,
+            'om_positions': om_positions,
             'clear_queue': clear_queue,
             'reopen_env': reopen_env,
             **kwargs

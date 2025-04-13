@@ -81,11 +81,11 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
             i += 1
             self.logger.info(f"Running active loop iteration {i}/{self.inference.max_num_points}")
 
-            x = self.inference.get_next_candidate()
-            self.logger.info(f"Next candidate: {x}")
+            candidates = self.inference.get_next_candidate()
+            self.logger.info(f"Next candidates: {candidates}")
             # Request measurement at this x position
             push_response = await self.push_client.request_measurement(
-                x_positions=[x],
+                candidates=candidates,
                 clear_queue=is_first_iteration,  # Only clear queue on first iteration
                 reopen_env=True,  # always reopen environment just in case
                 **self.xrr_config.to_dict()
@@ -102,7 +102,6 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
             scan = await self._wait_for_scan()
             
             if scan:
-                self.logger.info(f"Received scan for x = {x}")
                 # Print some info about the scan
                 scan_info = scan.get('info', {})
                 self.logger.debug(f"Scan info: {scan_info}")
@@ -113,15 +112,16 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
                     self.logger.info(f"Stream '{stream_name}' has {len(stream_data)} points")
 
                 processed_curve = self.process_scan(scan)
-                self.inference.add_data(x, **processed_curve)
+                processed_curve['x'] = candidates
+                self.inference.add_data(**processed_curve)
                 
                 # Store result
                 results.append({
-                    'x_position': x,
+                    'x_position': candidates,
                     'processed_curve': processed_curve,
                 })
             else:
-                self.logger.warning(f"No scan received for x = {x} after waiting")
+                self.logger.warning(f"No scan received for x = {candidates} after waiting")
         
         # Clear scans and measurement queue at the end of the loop to free memory
         self.logger.info("Clearing scans at end of active loop")
@@ -138,7 +138,7 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
         intensity = np.array(scan['streams']['intensity'])
         scattering_angle = np.array(scan['streams']['scattering_angle'])
         transmission = np.array(scan['streams']['transmission'])
-
+        x = np.array(scan['streams']['x'])
         if self.remove_background:
             try:
                 background = np.array(scan['streams']['background'])
@@ -152,5 +152,6 @@ class ConsecutiveActiveLoop(BaseActiveLoop):
             'intensity': intensity,
             'scattering_angle': scattering_angle,
             'transmission': transmission,
+            'x': x,
         }
  

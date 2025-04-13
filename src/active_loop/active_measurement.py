@@ -13,9 +13,13 @@ class ActiveMeasurement(nn.Module):
                  max_num_points: int,
                  ndim: int,
                  xdim: int = 1,
+                 n_candidates: int = 1,
                  ):
         super().__init__()
+
         self.initial_points = initial_points
+        self.n_candidates = n_candidates
+
         if xdim == 1:
             self.x_min, self.x_max = bounds
         elif xdim == 2:

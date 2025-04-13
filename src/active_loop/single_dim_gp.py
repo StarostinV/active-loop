@@ -130,7 +130,16 @@ class SingleDimActiveMeasurement(ActiveMeasurement):
                 likelihood.noise = torch.tensor(self.noise)
             else:
                 init_noise = train_std.pow(2).median().item()
-                likelihood.noise = torch.tensor(init_noise)
+                if self.noise_bounds is not None:
+                    init_noise = np.clip(
+                        init_noise, self.noise_bounds[0] + 1e-6, 
+                        self.noise_bounds[1] - 1e-6
+                    )
+                try:
+                    likelihood.noise = torch.tensor(init_noise)
+                except RuntimeError as e:
+                    print(f"Error setting noise: {e}")
+                    likelihood.noise = torch.tensor((self.noise_bounds[0] + self.noise_bounds[1]) / 2)
             
             # Add noise prior if specified
             if self.noise_prior_mean is not None and self.noise_prior_std is not None:
@@ -219,3 +228,6 @@ if __name__ == "__main__":
     print(active_measurement)
     candidate = active_measurement.find_candidate()
     print(candidate)
+    active_measurement.plot_gp()
+
+    plt.savefig("single_dim_gp.png")

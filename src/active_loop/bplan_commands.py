@@ -1,3 +1,4 @@
+import numpy as np
 
 from bluesky_queueserver_api import BPlan
 
@@ -117,18 +118,17 @@ class MeasureFullXRR(CommandGroup):
 
 class CorrectAlignmentX:
     def __init__(self, 
-                 gpos1: float = DEFAULT_GPOS1,
-                 gpos2: float = DEFAULT_GPOS2,
-                 lpos1: float = DEFAULT_LPOS1,
-                 lpos2: float = DEFAULT_LPOS2):
+                 gpos1: float = -0.05,
+                 gpos2: float = 0.029,
+                 lpos1: float = -25,
+                 lpos2: float = 25):
         self.gpos1 = gpos1
         self.gpos2 = gpos2
         self.lpos1 = lpos1
         self.lpos2 = lpos2
     
     def __call__(self, x: float) -> Scan:
-        x = (x - self.lpos1) / (self.lpos2 - self.lpos1)
-        pos = self.gpos1 + (self.gpos2 - self.gpos1) * x
+        pos = x2gonil(x, self.gpos1, self.gpos2, self.lpos1, self.lpos2)
         return UmvMotor("gonil", str(round(pos, 3)))
 
 
@@ -144,8 +144,50 @@ class SetX:
         )
 
 
+class F4scan(Scan):
+    name = "fscan"
+
+    def command(self,
+                integration_time: float,
+                om: list[float],
+                tt: list[float],
+                lx15a: list[float],
+                gonil: list[float]
+                ):
+        
+        arr1 = f"v1={value2str(om)},v2={value2str(tt)},v3={value2str(lx15a)},v4={value2str(gonil)}"
+        arr2 = value2str(integration_time)
+        arr3 = "'om' 'v1' 'tt' 'v2' 'lx15a' 'v3' 'gonil' 'v4'"
+        return ' '.join(["'" + arr1 + "'", arr2, arr3]), 
+
+
+class XOMMapScan(F4scan):
+    def __init__(self,
+                 x: float,
+                 om: float,
+                 integration_time: float = 0.1,
+                 gpos1: float = -0.05,
+                 gpos2: float = 0.029,
+                 lpos1: float = -25,
+                 lpos2: float = 25,
+                 ):
+        x = np.array(x)
+        om = np.array(om)
+        tt = om * 2
+        gonil = x2gonil(x, gpos1, gpos2, lpos1, lpos2)
+        super().__init__(integration_time, om.tolist(), tt.tolist(), x.tolist(), gonil.tolist())
+
+
+def x2gonil(x, gpos1, gpos2, lpos1, lpos2):
+    x = (x - lpos1) / (lpos2 - lpos1)
+    return gpos1 + (gpos2 - gpos1) * x
+
+
 def value2str(value: float, precision: int = 3):
     if isinstance(value, float):
         return str(round(value, precision))
+    elif isinstance(value, (list, tuple, np.ndarray)):
+        strlist=[str(round(x, precision)) for x in value ]
+        return '[' + ",".join(strlist) + ']' 
     else:
         return value

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import numpy as np
 from dataclasses import dataclass
 from typing import Dict, List, Any, Optional, Tuple
 
@@ -17,6 +18,7 @@ from active_loop.logging_utils import setup_logging
 from active_loop.bplan_commands import (
     CorrectAlignmentX,
     SetX,
+    XOMMapScan,
     MeasureFullXRR,
     DEFAULT_TT_MAX,
     DEFAULT_TT_MIN,
@@ -32,7 +34,7 @@ from active_loop.bplan_commands import (
 class MeasurementRequest:
     """Data structure to hold measurement request information"""
     x_positions: List[float]
-    q_positions: List[float] = None
+    om_positions: Optional[List[float]] = None
     tt_max: float = DEFAULT_TT_MAX
     tt_min: float = DEFAULT_TT_MIN
     gpos1: float = DEFAULT_GPOS1
@@ -61,11 +63,13 @@ class PushServer:
                  log_level: str = 'INFO',
                  log_file: Optional[str] = None,
                  current_x: float = 0.0,
+                 test_mode: bool = False,
                  ):
         self.host = host
         self.port = port
         self.use_prod = use_prod
         self.current_x = current_x
+        self.test_mode = test_mode
         
         # Redis configuration
         self.redis_config = PROD_REDIS_CONFIG if use_prod else TEST_REDIS_CONFIG
@@ -88,7 +92,10 @@ class PushServer:
 
         self.api = None
 
-        self.connect_api()
+        if not self.test_mode:
+            self.connect_api()
+        else:
+            self.logger.info("Running in test mode - API connection skipped")
     
     def connect_api(self):
         self.api = REManagerAPI(
@@ -166,6 +173,38 @@ class PushServer:
     def request2bplans(self, request: MeasurementRequest) -> List[BPlan]:
         """Convert a measurement request to a list of BPlans"""
         # Create measurement commands
+        if request.om_positions is None:
+            return self.process_request_with_full_xrr(request)
+        else:
+            return self.process_request_with_xom_map(request)
+        
+    def process_request_with_xom_map(self, request: MeasurementRequest) -> List[BPlan]:
+        x = request.x_positions
+        om = request.om_positions
+        integration_time = request.acquisition_time
+        gpos1 = request.gpos1
+        gpos2 = request.gpos2
+        lpos1 = request.lpos1
+        lpos2 = request.lpos2
+
+        # sort points so that om is increasing
+        if len(om) > 1:
+            sorted_idx = np.argsort(np.array(om))
+            x = np.array(x)[sorted_idx].tolist()
+            om = np.array(om)[sorted_idx].tolist()
+
+        fscan = XOMMapScan(
+            x=x,
+            om=om,
+            integration_time=integration_time,
+            gpos1=gpos1,
+            gpos2=gpos2,
+            lpos1=lpos1,
+            lpos2=lpos2
+        )
+        return [fscan()]
+
+    def process_request_with_full_xrr(self, request: MeasurementRequest) -> List[BPlan]:
         correct_alignment = CorrectAlignmentX(
             gpos1=request.gpos1,
             gpos2=request.gpos2,
@@ -200,6 +239,16 @@ class PushServer:
         """Execute a measurement request"""
         self.logger.info(f"Executing measurement at positions: {request.x_positions}")
         
+        # Get BPlans regardless of test mode
+        bplans = self.request2bplans(request)
+        
+        if self.test_mode:
+            # In test mode, just print the BPlans instead of submitting to API
+            self.logger.info("TEST MODE: Would execute the following BPlans:")
+            for idx, bplan in enumerate(bplans):
+                self.logger.info(f"BPlan {idx+1}: {bplan}")
+            return
+            
         # Create API client
         api = self.api
         
@@ -214,8 +263,6 @@ class PushServer:
                     self.reopen_environment()
                 except Exception as e:
                     self.logger.warning(f"Error reopening environment: {e}")
-
-            bplans = self.request2bplans(request)
 
             item_uids = []
 
@@ -279,6 +326,11 @@ class PushServer:
             return size
 
     def reopen_environment(self):
+        """Reopen the environment on the server"""
+        if self.test_mode:
+            self.logger.info("TEST MODE: Would reopen environment")
+            return
+            
         self.logger.info("Reopening environment")
         try:
             self.api.environment_close()
@@ -314,7 +366,7 @@ class PushServer:
                         else:
                             measurement = MeasurementRequest(
                                 x_positions=x_positions,
-                                q_positions=request.get('q_positions', None),
+                                om_positions=request.get('om_positions', None),
                                 tt_max=request.get('tt_max', DEFAULT_TT_MAX),
                                 tt_min=request.get('tt_min', DEFAULT_TT_MIN),
                                 gpos1=request.get('gpos1', DEFAULT_GPOS1),
@@ -425,14 +477,15 @@ def main():
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], 
                       help="Logging level")
     parser.add_argument("--log-file", default=None, help="File to save logs to")
-    
+    parser.add_argument("--test", action="store_true", help="Run in test mode (no API connection)")
     args = parser.parse_args()
     
     server = PushServer(
         host=args.host,
         port=args.port,
         log_level=args.log_level,
-        log_file=args.log_file
+        log_file=args.log_file,
+        test_mode=args.test
     )
     
     try:
