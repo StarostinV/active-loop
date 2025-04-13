@@ -4,7 +4,7 @@
 defaults:
   - active_loop: consecutive_loop
   - inference: npe_inference_1l
-  - active_measurement: single_dim_priors_thickness_1l
+  - active_measurement: multi_dim_priors_1l
   - _self_
 
 # Hydra configuration to disable default output directory
@@ -42,14 +42,14 @@ preprocessing:
 xrr_config:
   tt_min: 0.12
   tt_max: 1.0
-  gpos1: -0.18
-  gpos2: -0.11
+  gpos1: 0.412
+  gpos2: 0.507
   lpos1: -25
   lpos2: 25
   num_points: 64
 
 # Experiment settings
 experiment:
-  name: "dip-thickness-prior-1l-241008-1"
+  name: "multitask-again-with-no-fucking-outliers-1l-241008-1"
   save_dir: "./results"
   seed: 42

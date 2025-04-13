@@ -1,14 +1,13 @@
-module: single_dim_gp
-class_name: SingleDimActiveMeasurement
+module: multitask_gp
+class_name: MultitaskActiveMeasurement
 params:
-    bounds: [-25, 25]
+    bounds: [[-25, 25], [-25, 25]]
     initial_points: [-25.0, 25.0]
-    param_idx: 1
+    param_indices: [0, 1]
     fit_kernel: true
-    fit_likelihood: true
     max_num_points: 30
-    lengthscale_prior_mean: 8
-    lengthscale_prior_std: 0.1
+    lengthscale_prior_mean: 7
+    lengthscale_prior_std: 0.3
     outputscale_prior_mean: 0.3
     outputscale_prior_std: 0.05
     noise_bounds: [0.0001, 1.0]

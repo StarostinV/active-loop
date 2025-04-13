@@ -1,0 +1,12 @@
+module: spatial_dim_gp
+class_name: Spatial2DimActiveMeasurement
+params:
+    bounds: [[-25, 25], [0.06, 0.5]]
+    initial_points: [[-25.0, 0.2], [-24.0, 0.1],]
+    fit_kernel: true
+    fit_likelihood: true
+    max_num_points: 100
+    n_candidates: 10
+    lengthscale_prior_mean: [10, 0.1]
+    lengthscale_prior_std: [5, 0.1]
+    use_linear_mean: true

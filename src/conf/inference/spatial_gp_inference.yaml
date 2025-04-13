@@ -1,0 +1,4 @@
+module: consecutive_inference
+class_name: ConsecutiveInferenceWithXOMMap
+params:
+  err_std: 0.2
