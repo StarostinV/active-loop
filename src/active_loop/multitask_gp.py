@@ -24,16 +24,17 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
                  bounds: tuple[float, float] = (0, 1),
                  fit_kernel: bool = True,
                  max_num_points: int = 30,
-                 lengthscale: float = None,
-                 outputscale: float = None,
-                 noise: float = None,
-                 lengthscale_prior_mean: float = None,
-                 lengthscale_prior_std: float = None,
-                 outputscale_prior_mean: float = None,
-                 outputscale_prior_std: float = None,
-                 noise_prior_mean: float = None,
-                 noise_prior_std: float = None,
-                 noise_bounds: tuple[float, float] = None,
+                 acquisition_weights: Union[List[float], None] = None,
+                 lengthscale: Union[float, List[float]] = None,
+                 outputscale: Union[float, List[float]] = None,
+                 noise: Union[float, List[float]] = None,
+                 lengthscale_prior_mean: Union[float, List[float]] = None,
+                 lengthscale_prior_std: Union[float, List[float]] = None,
+                 outputscale_prior_mean: Union[float, List[float]] = None,
+                 outputscale_prior_std: Union[float, List[float]] = None,
+                 noise_prior_mean: Union[float, List[float]] = None,
+                 noise_prior_std: Union[float, List[float]] = None,
+                 noise_bounds: Union[tuple[float, float], List[tuple[float, float]]] = None,
                  ):
         # Determine ndim from param_indices
         ndim = len(param_indices)
@@ -48,6 +49,17 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
         self.param_indices = param_indices
         self.fit_kernel = fit_kernel
         
+        # Set acquisition weights for combining uncertainties across dimensions
+        if acquisition_weights is None:
+            # Default to equal weights
+            self.acquisition_weights = torch.ones(ndim)
+        else:
+            if len(acquisition_weights) != ndim:
+                raise ValueError(f"Length of acquisition_weights ({len(acquisition_weights)}) must match ndim ({ndim})")
+            self.acquisition_weights = torch.tensor(acquisition_weights)
+            # Normalize weights to sum to ndim (to maintain same scale as unweighted case)
+            self.acquisition_weights = self.acquisition_weights * (ndim / self.acquisition_weights.sum())
+        
         # Initialize a separate GP model for each output dimension
         self.gp_models = []
         
@@ -60,18 +72,49 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
             # If a single kernel is provided, use it for all dimensions
             self.gpkernels = [gpkernel] * ndim
         
-        self.lengthscale = lengthscale
-        self.outputscale = outputscale
-        self.noise = noise
+        # Store parameters, ensuring they are proper lists for each dimension
+        self.lengthscale = self._ensure_list_param(lengthscale, ndim)
+        self.outputscale = self._ensure_list_param(outputscale, ndim)
+        self.noise = self._ensure_list_param(noise, ndim)
         
         # Store prior parameters
-        self.lengthscale_prior_mean = lengthscale_prior_mean
-        self.lengthscale_prior_std = lengthscale_prior_std
-        self.outputscale_prior_mean = outputscale_prior_mean
-        self.outputscale_prior_std = outputscale_prior_std
-        self.noise_prior_mean = noise_prior_mean
-        self.noise_prior_std = noise_prior_std
-        self.noise_bounds = noise_bounds
+        self.lengthscale_prior_mean = self._ensure_list_param(lengthscale_prior_mean, ndim)
+        self.lengthscale_prior_std = self._ensure_list_param(lengthscale_prior_std, ndim)
+        self.outputscale_prior_mean = self._ensure_list_param(outputscale_prior_mean, ndim)
+        self.outputscale_prior_std = self._ensure_list_param(outputscale_prior_std, ndim)
+        self.noise_prior_mean = self._ensure_list_param(noise_prior_mean, ndim)
+        self.noise_prior_std = self._ensure_list_param(noise_prior_std, ndim)
+        
+        # Handle noise bounds
+        if noise_bounds is None:
+            self.noise_bounds = None
+        elif isinstance(noise_bounds[0], (list, tuple)) and len(noise_bounds) == ndim:
+            # Already a list of bounds
+            self.noise_bounds = noise_bounds
+        else:
+            # Single bound for all dimensions
+            self.noise_bounds = [noise_bounds] * ndim
+
+    def _ensure_list_param(self, param, ndim):
+        """
+        Ensure parameter is a list with length matching the number of dimensions.
+        
+        Args:
+            param: Parameter (can be None, single value, or list)
+            ndim: Number of dimensions
+            
+        Returns:
+            List of parameter values, or None if param is None
+        """
+        if param is None:
+            return None
+        elif isinstance(param, (list, tuple)):
+            if len(param) != ndim:
+                raise ValueError(f"Parameter list length ({len(param)}) does not match number of dimensions ({ndim})")
+            return list(param)
+        else:
+            # Single value for all dimensions
+            return [param] * ndim
 
     def preprocess_input(self, x, y, y_std):
         """
@@ -163,21 +206,31 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
             # Configure the kernel with priors if specified
             kernel = self.gpkernels[dim]
             
+            # Apply dimension-specific lengthscale prior if available
             if self.lengthscale_prior_mean is not None and self.lengthscale_prior_std is not None:
+                # Get dimension-specific values
+                ls_mean = self.lengthscale_prior_mean[dim]
+                ls_std = self.lengthscale_prior_std[dim]
+                
                 # Using LogNormal prior for lengthscale (must be positive)
                 lengthscale_prior = LogNormalPrior(
-                    loc=torch.tensor(np.log(self.lengthscale_prior_mean)),
-                    scale=torch.tensor(self.lengthscale_prior_std)
+                    loc=torch.tensor(np.log(ls_mean)),
+                    scale=torch.tensor(ls_std)
                 )
                 kernel.base_kernel.register_prior(
                     "lengthscale_prior", lengthscale_prior, "lengthscale"
                 )
                 
+            # Apply dimension-specific outputscale prior if available
             if self.outputscale_prior_mean is not None and self.outputscale_prior_std is not None:
+                # Get dimension-specific values
+                os_mean = self.outputscale_prior_mean[dim]
+                os_std = self.outputscale_prior_std[dim]
+                
                 # Using LogNormal prior for outputscale (must be positive)
                 outputscale_prior = LogNormalPrior(
-                    loc=torch.tensor(np.log(self.outputscale_prior_mean)),
-                    scale=torch.tensor(self.outputscale_prior_std)
+                    loc=torch.tensor(np.log(os_mean)),
+                    scale=torch.tensor(os_std)
                 )
                 kernel.register_prior(
                     "outputscale_prior", outputscale_prior, "outputscale"
@@ -187,9 +240,11 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
             noise_constraint = None
             if self.noise_bounds is not None:
                 from gpytorch.constraints import Interval
+                # Get dimension-specific noise bounds
+                noise_bounds = self.noise_bounds[dim]
                 noise_constraint = Interval(
-                    lower_bound=torch.tensor(self.noise_bounds[0]),
-                    upper_bound=torch.tensor(self.noise_bounds[1])
+                    lower_bound=torch.tensor(noise_bounds[0]),
+                    upper_bound=torch.tensor(noise_bounds[1])
                 )
             
             # Create the likelihood with appropriate constraints
@@ -197,23 +252,30 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
             
             # Initialize with provided noise value or use median of train_std
             if self.noise is not None:
-                likelihood.noise = torch.tensor(self.noise)
+                # Use dimension-specific noise if available
+                likelihood.noise = torch.tensor(self.noise[dim])
             else:
                 init_noise = std_dim.pow(2).median().item()
                 if self.noise_bounds is not None:
-                    init_noise = np.clip(init_noise, self.noise_bounds[0] + 1e-6, 
-                                         self.noise_bounds[1] - 1e-6)
+                    noise_bounds = self.noise_bounds[dim]
+                    init_noise = np.clip(init_noise, noise_bounds[0] + 1e-6, 
+                                         noise_bounds[1] - 1e-6)
                 try:
                     likelihood.noise = torch.tensor(init_noise)
                 except RuntimeError as e:
-                    print(f"Error setting noise: {e}")
-                    likelihood.noise = torch.tensor((self.noise_bounds[0] + self.noise_bounds[1]) / 2)
+                    print(f"Error setting noise for dim {dim}: {e}")
+                    noise_bounds = self.noise_bounds[dim]
+                    likelihood.noise = torch.tensor((noise_bounds[0] + noise_bounds[1]) / 2)
             
-            # Add noise prior if specified
+            # Add dimension-specific noise prior if specified
             if self.noise_prior_mean is not None and self.noise_prior_std is not None:
+                # Get dimension-specific values
+                noise_mean = self.noise_prior_mean[dim]
+                noise_std = self.noise_prior_std[dim]
+                
                 noise_prior = LogNormalPrior(
-                    loc=torch.tensor(np.log(self.noise_prior_mean)),
-                    scale=torch.tensor(self.noise_prior_std)
+                    loc=torch.tensor(np.log(noise_mean)),
+                    scale=torch.tensor(noise_std)
                 )
                 likelihood.register_prior("noise_prior", noise_prior, "noise")
             
@@ -231,9 +293,11 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
                 fit_gpytorch_mll(mll)
             else:
                 if self.lengthscale is not None:
-                    kernel.base_kernel.raw_lengthscale.data.fill_(self.lengthscale)
+                    # Use dimension-specific lengthscale if available
+                    kernel.base_kernel.raw_lengthscale.data.fill_(self.lengthscale[dim])
                 if self.outputscale is not None:
-                    kernel.raw_outputscale.data.fill_(self.outputscale)
+                    # Use dimension-specific outputscale if available
+                    kernel.raw_outputscale.data.fill_(self.outputscale[dim])
             
             # Add the fitted GP to our list
             self.gp_models.append(gp)
@@ -241,7 +305,7 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
     def acq(self, x: torch.Tensor) -> torch.Tensor:
         """
         Compute the acquisition function for a given set of points.
-        For multitask GPs, we sum the acquisition values across all dimensions.
+        For multitask GPs, we compute a weighted sum of acquisition values across dimensions.
         
         Args:
             x: Points to evaluate
@@ -252,12 +316,13 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
         if not self.gp_models:
             raise ValueError("GP models are not fitted yet.")
         
-        # Compute acquisition function for each dimension and sum
+        # Compute weighted acquisition function for each dimension
         acq_values = torch.zeros(x.shape[0], device=x.device)
         
-        for gp in self.gp_models:
+        for i, gp in enumerate(self.gp_models):
             acq = UncertaintyAcquisition(gp)
-            acq_values += acq(x)
+            # Apply weight for this dimension
+            acq_values += self.acquisition_weights[i] * acq(x)
         
         return acq_values
 
@@ -276,8 +341,8 @@ class MultitaskActiveMeasurement(ActiveMeasurement):
         if not self.gp_models:
             raise ValueError("GP models are not fitted yet.")
         
-        # Define a combined acquisition function that sums over all dimensions
-        acq_func = MultitaskUncertaintyAcquisition(self.gp_models)
+        # Define a combined acquisition function that applies weights
+        acq_func = MultitaskUncertaintyAcquisition(self.gp_models, self.acquisition_weights)
         
         return optimize_acqf(
             acq_function=acq_func, 
@@ -357,40 +422,51 @@ class UncertaintyAcquisition(AnalyticAcquisitionFunction):
 
 class MultitaskUncertaintyAcquisition(AnalyticAcquisitionFunction):
     """
-    Combined acquisition function for multitask GPs that sums uncertainties across all tasks.
+    Combined acquisition function for multitask GPs that computes a weighted sum
+    of uncertainties across all tasks.
     """
-    def __init__(self, models):
+    def __init__(self, models, weights=None):
         # Use the first model for inheritance requirements
         super().__init__(model=models[0])
         self.models = models
         
+        # Set weights for combining uncertainties
+        if weights is None:
+            # Equal weights if none provided
+            self.weights = torch.ones(len(models))
+        else:
+            self.weights = weights
+        
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # Sum uncertainties from all models
+        # Sum weighted uncertainties from all models
         total_uncertainty = torch.zeros(X.shape[0], device=X.device)
         
-        for model in self.models:
+        for i, model in enumerate(self.models):
             posterior = model.posterior(X)
             uncertainty = posterior.variance.squeeze((-1, -2))
-            total_uncertainty += uncertainty
+            total_uncertainty += self.weights[i] * uncertainty
         
         return total_uncertainty
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage with dimension-specific priors and acquisition weights
     active_measurement = MultitaskActiveMeasurement(
         initial_points=[-24, 0, 24],
         param_indices=(0, 1),  # Track first two parameters
         bounds=[-24, 24],
         fit_kernel=True,
         max_num_points=30,
-        lengthscale_prior_mean=1.0,
-        lengthscale_prior_std=0.3,
-        outputscale_prior_mean=1.0,
-        outputscale_prior_std=0.3,
-        noise_prior_mean=0.01,
-        noise_prior_std=0.5,
-        noise_bounds=(1e-6, 0.1),
+        # Weigh uncertainty of first dimension 2x more than second dimension
+        acquisition_weights=[2.0, 1.0],  
+        # Different priors for each dimension
+        lengthscale_prior_mean=[1.0, 0.5],  # First dimension has longer lengthscale prior
+        lengthscale_prior_std=[0.3, 0.2],
+        outputscale_prior_mean=[1.0, 2.0],  # Second dimension has higher variance prior
+        outputscale_prior_std=[0.3, 0.4],
+        noise_prior_mean=[0.01, 0.02],      # Different noise levels per dimension
+        noise_prior_std=[0.5, 0.5],
+        noise_bounds=[(1e-6, 0.1), (1e-6, 0.2)],  # Different noise bounds per dimension
     )
     
     # Add initial data points - ensure all tensors are double type
