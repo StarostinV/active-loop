@@ -32,7 +32,7 @@ from active_loop.bplan_commands import (
 class MeasurementRequest:
     """Data structure to hold measurement request information"""
     x_positions: List[float]
-    q_positions: List[float] = None
+    om_positions: List[float] = None   #quickfix: if there are om_positions, go for fscan and ignore alle parmas below. x_pos and om_pos are assumed to have the same lengh
     tt_max: float = DEFAULT_TT_MAX
     tt_min: float = DEFAULT_TT_MIN
     gpos1: float = DEFAULT_GPOS1
@@ -314,7 +314,7 @@ class PushServer:
                         else:
                             measurement = MeasurementRequest(
                                 x_positions=x_positions,
-                                q_positions=request.get('q_positions', None),
+                                om_positions=request.get('om_positions', None),
                                 tt_max=request.get('tt_max', DEFAULT_TT_MAX),
                                 tt_min=request.get('tt_min', DEFAULT_TT_MIN),
                                 gpos1=request.get('gpos1', DEFAULT_GPOS1),

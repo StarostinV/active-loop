@@ -45,7 +45,21 @@ class UmvMotor(Scan):
 class UmvX(UmvMotor):
     def command(self, x: float):
         return super().command("lx15a", x)
+
+class Fscan(Scan):
+    name = "fscan"
     
+    def command(self, expr: str, integration_time: float, *args):
+        #motors = args[::2]
+        #var_names = args[1::2]
+        return (expr, integration_time,*args )
+
+#om tt lx15a gonil
+class F4scan(Scan)
+    name = "fscan"
+
+    def command(self, integration_time, om: [float], tt: [float], lx15a: [float], gonil: [float] ):
+        return super().command(f"v1={value2str(om)},v2={value2str(tt)},v3={value2str(lx15a)},v4={value2str(gonil)}", integration_time, "om" ,"v1","tt","v2","lx15a","v3","gonil","v4")
 
 class AttenUse(Scan):
     name = "attenuse"
@@ -147,5 +161,8 @@ class SetX:
 def value2str(value: float, precision: int = 3):
     if isinstance(value, float):
         return str(round(value, precision))
+    elif isinstance(value, list):
+        strlist=[str(round(x, precision)) for x in value ]
+        return '[' + ",".join(strlist) + ']' 
     else:
         return value
