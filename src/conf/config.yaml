@@ -4,7 +4,7 @@
 defaults:
   - active_loop: consecutive_loop
   - inference: npe_inference_1l
-  - active_measurement: single_dim_priors_1l
+  - active_measurement: single_dim_priors_thickness_1l
   - _self_
 
 # Hydra configuration to disable default output directory
@@ -50,6 +50,6 @@ xrr_config:
 
 # Experiment settings
 experiment:
-  name: "dip-roughness-prior-1l-241008-1"
+  name: "dip-thickness-prior-1l-241008-1"
   save_dir: "./results"
   seed: 42
